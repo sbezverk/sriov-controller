@@ -38,12 +38,19 @@ func (s *serviceController) Run() {
 			s.Stop()
 			return
 		case msg := <-s.configCh:
-			op := "Remove"
-			if msg.op == 0 {
-				op = "Add"
+			switch msg.op {
+			case operationAdd:
+				logrus.Infof("Service Controller: Received config message to add network service: %s pci address: %s", msg.vf.NetworkService, msg.pciAddr)
+				s.processAdd(msg)
+			case operationDel:
+				logrus.Info("Service Controller: Received Delete operation, shutting down service controller")
+				s.Stop()
+			case operationUpdate:
+				logrus.Infof("Service Controller: Received config message to update network service: %s", msg.vf.NetworkService)
+				s.processUpdate(msg)
+			default:
+				logrus.Errorf("error, recevied message with unknown operation %d", msg.op)
 			}
-			logrus.Infof("Service Controller: Received config message to %s network service: %s pci address: %s", op, msg.vf.NetworkService, msg.pciAddr)
-			s.processAdd(msg)
 		}
 	}
 }
@@ -70,6 +77,20 @@ func (s *serviceController) processAdd(msg configMessage) {
 	}
 	// Network Service instance already exists, just need to inform about new VF
 	nsi := s.sriovNetServices[msg.vf.NetworkService]
+	nsi.configCh <- msg
+}
+
+func (s *serviceController) processUpdate(msg configMessage) {
+	// Check if there is already an instance of network service
+	_, ok := s.sriovNetServices[msg.vf.NetworkService]
+	if !ok {
+		// Network Service instance is not found
+		logrus.Errorf("fatal error as received update message for non-existing network service %s, ignoring it", msg.vf.NetworkService)
+		return
+	}
+	// Network Service instance already exists, just need to inform about new VF
+	nsi := s.sriovNetServices[msg.vf.NetworkService]
+	nsi.vfs = map[string]*VF{}
 	nsi.configCh <- msg
 }
 

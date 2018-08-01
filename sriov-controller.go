@@ -27,13 +27,21 @@ const (
 	nsmLabel = "networkservicemesh.io/sriov"
 )
 
+type operationType int
+
+const (
+	operationAdd operationType = iota
+	operationDel
+	operationUpdate
+)
+
 var (
 	kubeconfig = flag.String("kubeconfig", "", "Absolute path to the kubeconfig file. Either this or master needs to be set if the provisioner is being run out of cluster.")
 	wg         sync.WaitGroup
 )
 
 type message struct {
-	op        int
+	op        operationType
 	configMap *v1.ConfigMap
 }
 
@@ -59,7 +67,7 @@ func newVFs() *VFs {
 }
 
 type configMessage struct {
-	op      int
+	op      operationType
 	pciAddr string
 	vf      VF
 }
@@ -86,7 +94,7 @@ func setupInformer(informer cache.SharedIndexInformer, queue workqueue.RateLimit
 			AddFunc: func(obj interface{}) {
 				configMap := obj.(*v1.ConfigMap)
 				queue.Add(message{
-					op: 1, configMap: configMap})
+					op: operationAdd, configMap: configMap})
 			},
 			UpdateFunc: func(old, new interface{}) {
 				configMapNew := new.(*v1.ConfigMap)
@@ -95,12 +103,12 @@ func setupInformer(informer cache.SharedIndexInformer, queue workqueue.RateLimit
 					return
 				}
 				queue.Add(message{
-					op: 2, configMap: configMapNew})
+					op: operationUpdate, configMap: configMapNew})
 			},
 			DeleteFunc: func(obj interface{}) {
 				configMap := obj.(*v1.ConfigMap)
 				queue.Add(message{
-					op: 3, configMap: configMap})
+					op: operationDel, configMap: configMap})
 			},
 		},
 	)
@@ -158,42 +166,90 @@ func workforever(cc *configController, queue workqueue.RateLimitingInterface, in
 		func(obj message) {
 			defer queue.Done(obj)
 			switch obj.op {
-			case 1:
+			case operationAdd:
 				logrus.Infof("Config map add called")
 				if err := processConfigMapAdd(cc, obj.configMap); err != nil {
-					logrus.Errorf("fail to process configmap %s/%s with error: %+v",
+					logrus.Errorf("fail to process add of configmap %s/%s with error: %+v",
 						obj.configMap.ObjectMeta.Namespace,
 						obj.configMap.ObjectMeta.Name, err)
 				}
-			case 2:
+			case operationUpdate:
 				logrus.Info("Config map update called")
-			case 3:
+				//				if err := processConfigMapUpdate(cc, obj.configMap); err != nil {
+				//					logrus.Errorf("fail to process update of configmap %s/%s with error: %+v",
+				//						obj.configMap.ObjectMeta.Namespace,
+				//						obj.configMap.ObjectMeta.Name, err)
+				//				}
+			case operationDel:
 				logrus.Info("Config map delete called")
+				if err := processConfigMapDelete(cc, obj.configMap); err != nil {
+					logrus.Errorf("fail to process delete of configmap %s/%s with error: %+v",
+						obj.configMap.ObjectMeta.Namespace,
+						obj.configMap.ObjectMeta.Name, err)
+				}
 			}
 			queue.Forget(obj)
 		}(msg)
 	}
 }
 
-func processConfigMapAdd(cc *configController, configMap *v1.ConfigMap) error {
-	logrus.Infof("Processing configmap %s/%s", configMap.ObjectMeta.Namespace, configMap.ObjectMeta.Name)
-	vfs := newVFs()
-	vfs.Lock()
-	defer vfs.Unlock()
+func processConfigMap(configMap *v1.ConfigMap) (map[string]*VF, error) {
+	vfs := map[string]*VF{}
 	for k, v := range configMap.Data {
 		vf := VF{}
 		if err := yaml.Unmarshal([]byte(v), &vf); err != nil {
-			return err
+			return nil, err
 		}
-		vfs.vfs[k] = &vf
+		vfs[k] = &vf
 	}
-	cc.vfs = vfs
-	logrus.Infof("Imported: %d VF configuration(s). Sending configuration to serviceController.", cc.vfs)
+	return vfs, nil
+}
 
+func sendConfig(cc *configController) {
 	// Sending to serviceController configuration for all learned VFs
 	for k, vf := range cc.vfs.vfs {
-		cc.configCh <- configMessage{op: 0, pciAddr: k, vf: *vf}
+		cc.configCh <- configMessage{op: operationAdd, pciAddr: k, vf: *vf}
 	}
+}
+
+func processConfigMapAdd(cc *configController, configMap *v1.ConfigMap) error {
+	logrus.Infof("Processing Add configmap %s/%s", configMap.ObjectMeta.Namespace, configMap.ObjectMeta.Name)
+	vfs, err := processConfigMap(configMap)
+	if err != nil {
+		return err
+	}
+	cc.vfs.Lock()
+	cc.vfs.vfs = vfs
+	cc.vfs.Unlock()
+	logrus.Infof("Imported: %d VF configuration(s). Sending configuration to serviceController.", cc.vfs)
+	sendConfig(cc)
+
+	return nil
+}
+
+func processConfigMapUpdate(cc *configController, configMap *v1.ConfigMap) error {
+	logrus.Infof("Processing Update configmap %s/%s", configMap.ObjectMeta.Namespace, configMap.ObjectMeta.Name)
+	vfs, err := processConfigMap(configMap)
+	if err != nil {
+		return err
+	}
+	cc.vfs.Lock()
+	cc.vfs.vfs = vfs
+	cc.vfs.Unlock()
+	logrus.Infof("Updated: %d VF configuration(s). Sending configuration to serviceController.", cc.vfs)
+	// operationUpdate will force service controller to drop all existing VFs and re-learn them
+	cc.configCh <- configMessage{op: operationUpdate, pciAddr: "", vf: VF{}}
+	// resending updated VF information
+	sendConfig(cc)
+
+	return nil
+}
+
+func processConfigMapDelete(cc *configController, configMap *v1.ConfigMap) error {
+	logrus.Infof("Processing Delete configmap %s/%s", configMap.ObjectMeta.Namespace, configMap.ObjectMeta.Name)
+	// Drop all info from removed config map
+	cc.vfs.vfs = map[string]*VF{}
+	cc.configCh <- configMessage{op: operationDel, pciAddr: "", vf: VF{}}
 
 	return nil
 }

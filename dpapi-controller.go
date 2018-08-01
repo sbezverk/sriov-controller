@@ -51,19 +51,33 @@ func (s *serviceInstanceController) Run() {
 		select {
 		case <-s.stopCh:
 			// shutdown received exiting wait loop
-			logrus.Infof("Received global shutdown message, exiting...")
+			logrus.Infof("Received shutdown message, network service %s is shutting down.", s.networkServiceName)
 			return
 		case msg := <-s.configCh:
 			switch msg.op {
-			case 0:
+			case operationAdd:
 				s.processAddVF(msg)
-			case 1:
+			case operationUpdate:
 			default:
 				logrus.Errorf("error, recevied message with unknown operation %d", msg.op)
 			}
 		}
 	}
 }
+
+func (s *serviceInstanceController) processUpdateVF(msg configMessage) {
+	logrus.Infof("Network Service instance: %s, received update operation", msg.vf.NetworkService)
+	if s.regState == notRegistered {
+		logrus.Errorf("fatal error as received update message for a non-registered network service %s, ignoring it", msg.vf.NetworkService)
+		return
+	}
+	s.Lock()
+	s.vfs[msg.pciAddr] = &msg.vf
+	s.Unlock()
+	// Sending ListAndWatch notification of an update
+	s.updateCh <- struct{}{}
+}
+
 func (s *serviceInstanceController) processAddVF(msg configMessage) {
 	logrus.Infof("Network Service instance: %s, adding new VF, PCI address: %s", msg.vf.NetworkService, msg.pciAddr)
 	if s.regState == notRegistered {
@@ -76,7 +90,6 @@ func (s *serviceInstanceController) processAddVF(msg configMessage) {
 	s.Unlock()
 	// Sending ListAndWatch notification of an update
 	s.updateCh <- struct{}{}
-	logrus.Infof("processAddVF completed.")
 }
 
 // TODO (sbezverk) need to make sure that NetworkService name is complaint with dpapi nameing convention.

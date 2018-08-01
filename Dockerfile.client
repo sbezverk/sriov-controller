@@ -1,0 +1,9 @@
+FROM centos:latest
+
+RUN yum -y update \
+ && yum -y install pciutils \
+ && yum -y install net-tools \
+ && yum -y install sysfsutils \
+ && yum -y install iproute \
+ && yum clean all \
+ && rm -rf /var/cache/yum
