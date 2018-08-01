@@ -19,11 +19,6 @@ import (
 )
 
 const (
-	netDirectory    = "/sys/class/net/"
-	pciDirectory    = "/sys/bus/pci/devices"
-	sriovCapable    = "/sriov_totalvfs"
-	sriovConfigured = "/sriov_numvfs"
-
 	nsmLabel = "networkservicemesh.io/sriov"
 )
 
