@@ -227,6 +227,14 @@ func (s *serviceInstanceController) Allocate(ctx context.Context, reqs *pluginap
 			deviceSpec.Permissions = "rw"
 			response.Devices = append(response.Devices, &deviceSpec)
 		}
+		// Since the parent vfio device is also required to be visible in a container, adding it to the device list
+		// so kubelet could do necessary arrangements.
+		deviceSpec := pluginapi.DeviceSpec{}
+		deviceSpec.HostPath = "/dev/vfio/vfio"
+		deviceSpec.ContainerPath = "/dev/vfio/vfio"
+		deviceSpec.Permissions = "rw"
+		response.Devices = append(response.Devices, &deviceSpec)
+		//
 		responses.ContainerResponses = append(responses.ContainerResponses, &response)
 	}
 
