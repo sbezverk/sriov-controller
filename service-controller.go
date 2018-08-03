@@ -44,7 +44,7 @@ func (s *serviceController) Run() {
 				logrus.Infof("Service Controller: Received config message to add network service: %s pci address: %s", msg.vf.NetworkService, msg.pciAddr)
 				s.processAdd(msg)
 			case operationDeleteEntry:
-				logrus.Infof("Service Controller: Received config message to add network service: %s pci address: %s", msg.vf.NetworkService, msg.pciAddr)
+				logrus.Infof("Service Controller: Received config message to delete network service: %s pci address: %s", msg.vf.NetworkService, msg.pciAddr)
 				s.processDeleteEntry(msg)
 			case operationDeleteAll:
 				logrus.Info("Service Controller: Received Delete operation, shutting down service controller")
@@ -96,9 +96,22 @@ func (s *serviceController) processDeleteEntry(msg configMessage) {
 			msg.pciAddr, msg.vf.NetworkService, msg.vf.NetworkService)
 		return
 	}
-	// Network Service instance already exists, just need to inform about new VF
+	// Network Service instance already exists, just need to inform about deleted VF
 	nsi := s.sriovNetServices[msg.vf.NetworkService]
 	nsi.configCh <- msg
+	// Deleting deleted VF from the map
+	delete(nsi.vfs, msg.pciAddr)
+	// Checking if it was not the last VF in the map
+	if len(nsi.vfs) == 0 {
+		// Last VF was removed from Network Service Instance, no reason to keep it
+		// shutting it down
+		logrus.Infof("Network Service instance %s has no more live VFs, stop advertising this resource to the kubelet", msg.vf.NetworkService)
+		nsi.stopCh <- struct{}{}
+		// Waiting for service instance to close
+		<-nsi.doneCh
+		// Deleting the Network Service key
+		delete(s.sriovNetServices, msg.vf.NetworkService)
+	}
 }
 
 func (s *serviceController) processUpdate(msg configMessage) {
