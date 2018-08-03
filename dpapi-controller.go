@@ -34,17 +34,28 @@ type serviceInstanceController struct {
 	sync.RWMutex
 	socket             string
 	networkServiceName string
-	updateCh           chan struct{}
-	server             *grpc.Server
+	// regUpdateCh is used to signal changes in vfs map
+	regUpdateCh chan struct{}
+	// regStopCh is used to signal to stop advertise devices
+	regStopCh chan struct{}
+	// regDoneCh is used to confirm successful shutdown of WatchAndListen
+	regDoneCh chan struct{}
+	server    *grpc.Server
 }
 
 func newServiceInstanceController() *serviceInstanceController {
 	si := serviceInstance{
 		vfs: map[string]*VF{},
 	}
-	return &serviceInstanceController{si, notRegistered, sync.RWMutex{}, "", "", make(chan struct{}, updateChannelBufferSize), nil}
+	return &serviceInstanceController{si, notRegistered, sync.RWMutex{}, "", "",
+		make(chan struct{},
+			updateChannelBufferSize),
+		make(chan struct{}),
+		make(chan struct{}),
+		nil}
 }
 
+// Run starts Network Service instance and wait for configuration messages
 func (s *serviceInstanceController) Run() {
 	logrus.Info("Started service instance controller, waiting for confiugration to register with the kubelet..")
 	for {
@@ -52,12 +63,18 @@ func (s *serviceInstanceController) Run() {
 		case <-s.stopCh:
 			// shutdown received exiting wait loop
 			logrus.Infof("Received shutdown message, network service %s is shutting down.", s.networkServiceName)
+			s.regStopCh <- struct{}{}
+			// Waiting for WatchAndList to complete
+			<-s.regDoneCh
+			// At this point all cleanup is done so can inform upstream
+			close(s.doneCh)
 			return
 		case msg := <-s.configCh:
 			switch msg.op {
 			case operationAdd:
 				s.processAddVF(msg)
-			case operationUpdate:
+			case operationDeleteEntry:
+				s.processDeleteVF(msg)
 			default:
 				logrus.Errorf("error, recevied message with unknown operation %d", msg.op)
 			}
@@ -65,19 +82,8 @@ func (s *serviceInstanceController) Run() {
 	}
 }
 
-func (s *serviceInstanceController) processUpdateVF(msg configMessage) {
-	logrus.Infof("Network Service instance: %s, received update operation", msg.vf.NetworkService)
-	if s.regState == notRegistered {
-		logrus.Errorf("fatal error as received update message for a non-registered network service %s, ignoring it", msg.vf.NetworkService)
-		return
-	}
-	s.Lock()
-	s.vfs[msg.pciAddr] = &msg.vf
-	s.Unlock()
-	// Sending ListAndWatch notification of an update
-	s.updateCh <- struct{}{}
-}
-
+// processAddVF checks if Network Service instance has already been registered, if not registration process gets triggered
+// otherwise new VF gets added to the map and Update message send to refresh list of available VFs
 func (s *serviceInstanceController) processAddVF(msg configMessage) {
 	logrus.Infof("Network Service instance: %s, adding new VF, PCI address: %s", msg.vf.NetworkService, msg.pciAddr)
 	if s.regState == notRegistered {
@@ -89,7 +95,24 @@ func (s *serviceInstanceController) processAddVF(msg configMessage) {
 	s.vfs[msg.pciAddr] = &msg.vf
 	s.Unlock()
 	// Sending ListAndWatch notification of an update
-	s.updateCh <- struct{}{}
+	s.regUpdateCh <- struct{}{}
+}
+
+// processDeleteVF delete from VFs map deleted entry, then check if VFs are still left in Network Service instance
+// if none left, shut down Network Service instance, otherwise send Update message to refresh the list of available VFs
+func (s *serviceInstanceController) processDeleteVF(msg configMessage) {
+	logrus.Infof("Network Service instance: %s, delete VF, PCI address: %s", msg.vf.NetworkService, msg.pciAddr)
+	s.Lock()
+	delete(s.vfs, msg.pciAddr)
+	s.Unlock()
+	if len(s.vfs) == 0 {
+		// No more VFs left in Network Service Instance
+		// npo reason to have it running, shutting it down
+		s.stopCh <- struct{}{}
+		logrus.Infof("Shutting down Network Service instance: %s, as no more VFs left.", msg.vf.NetworkService)
+	}
+	// Sending ListAndWatch notification of an update
+	s.regUpdateCh <- struct{}{}
 }
 
 // TODO (sbezverk) need to make sure that NetworkService name is complaint with dpapi nameing convention.
@@ -179,14 +202,14 @@ func (s *serviceInstanceController) register() error {
 	return nil
 }
 
-func (s *serviceInstanceController) buildDeviceList() []*pluginapi.Device {
+func (s *serviceInstanceController) buildDeviceList(health string) []*pluginapi.Device {
 	deviceList := []*pluginapi.Device{}
 	s.Lock()
 	defer s.Unlock()
 	for _, vf := range s.vfs {
 		device := pluginapi.Device{}
 		device.ID = vf.VFIODevice
-		device.Health = pluginapi.Healthy
+		device.Health = health
 		deviceList = append(deviceList, &device)
 	}
 
@@ -196,14 +219,22 @@ func (s *serviceInstanceController) buildDeviceList() []*pluginapi.Device {
 // ListAndWatch converts VFs into device and list them
 func (s *serviceInstanceController) ListAndWatch(e *pluginapi.Empty, d pluginapi.DevicePlugin_ListAndWatchServer) error {
 	logrus.Infof("network service %s received ListandWatch from kubelet", s.networkServiceName)
-	d.Send(&pluginapi.ListAndWatchResponse{Devices: s.buildDeviceList()})
+	d.Send(&pluginapi.ListAndWatchResponse{Devices: s.buildDeviceList(pluginapi.Healthy)})
 	for {
 		select {
-		case <-s.stopCh:
+		case <-s.regStopCh:
+			logrus.Infof("ListAndWatch of Network Service %s received shut down signal.", s.networkServiceName)
+			// Informing kubelet that VFs which belong to network service are not useable now
+			d.Send(&pluginapi.ListAndWatchResponse{Devices: s.buildDeviceList(pluginapi.Unhealthy)})
+			close(s.regDoneCh)
 			return nil
-		case <-s.updateCh:
+		case <-s.regUpdateCh:
+			// TODO (sbezverk) it will work for adding new VFs, but what is updated vfs had one or more
+			// VFs removed? Need to investigate
+
 			// Received a notification of a change in VFs resending updated list to kubelet
-			d.Send(&pluginapi.ListAndWatchResponse{Devices: s.buildDeviceList()})
+			d.Send(&pluginapi.ListAndWatchResponse{Devices: s.buildDeviceList(pluginapi.Healthy)})
+			logrus.Infof("ListAndWatch of Network Service %s received update signal.", s.networkServiceName)
 		}
 	}
 }

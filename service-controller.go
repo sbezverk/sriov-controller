@@ -10,6 +10,7 @@ type serviceInstance struct {
 	vfs      map[string]*VF
 	stopCh   chan struct{}
 	configCh chan configMessage
+	doneCh   chan struct{}
 }
 
 // first key is network service, second key is pci address of VF
@@ -42,7 +43,10 @@ func (s *serviceController) Run() {
 			case operationAdd:
 				logrus.Infof("Service Controller: Received config message to add network service: %s pci address: %s", msg.vf.NetworkService, msg.pciAddr)
 				s.processAdd(msg)
-			case operationDel:
+			case operationDeleteEntry:
+				logrus.Infof("Service Controller: Received config message to add network service: %s pci address: %s", msg.vf.NetworkService, msg.pciAddr)
+				s.processDeleteEntry(msg)
+			case operationDeleteAll:
 				logrus.Info("Service Controller: Received Delete operation, shutting down service controller")
 				s.Stop()
 			case operationUpdate:
@@ -67,13 +71,30 @@ func (s *serviceController) processAdd(msg configMessage) {
 			vfs:      vfs,
 			configCh: make(chan configMessage),
 			stopCh:   make(chan struct{}),
+			doneCh:   make(chan struct{}),
 		}
 		s.sriovNetServices[msg.vf.NetworkService] = si
 		// Instantiating Service Instance controller
 		sic := newServiceInstanceController()
 		sic.configCh = si.configCh
 		sic.stopCh = si.stopCh
+		sic.doneCh = si.doneCh
 		go sic.Run()
+	}
+	// Network Service instance already exists, just need to inform about new VF
+	nsi := s.sriovNetServices[msg.vf.NetworkService]
+	nsi.configCh <- msg
+}
+
+func (s *serviceController) processDeleteEntry(msg configMessage) {
+	logrus.Infof("Deleting %s for Network Service instance: %s", msg.pciAddr, msg.vf.NetworkService)
+	// Check if there is already an instance of network service
+	_, ok := s.sriovNetServices[msg.vf.NetworkService]
+	if !ok {
+		// Network Service instance is not found, it should not happened
+		logrus.Infof("Deleting %s device of Network Service instance: %s, it should not happen as the Network Service instahce is unknown ",
+			msg.pciAddr, msg.vf.NetworkService, msg.vf.NetworkService)
+		return
 	}
 	// Network Service instance already exists, just need to inform about new VF
 	nsi := s.sriovNetServices[msg.vf.NetworkService]
@@ -96,7 +117,14 @@ func (s *serviceController) processUpdate(msg configMessage) {
 
 func (s *serviceController) Stop() {
 	// Inform all network service instances to shut down
-	for _, ns := range s.sriovNetServices {
+	logrus.Infof("Service controller recieved shutdown message, will shutdown %d ", len(s.sriovNetServices))
+	for s, ns := range s.sriovNetServices {
 		ns.stopCh <- struct{}{}
+		// Waiting for service instance to close
+		<-ns.doneCh
+		logrus.Infof("Confirmed shut down of %s instance", s)
 	}
+	// Re-initializing Network Services map
+	s.sriovNetServices = map[string]serviceInstance{}
+	logrus.Info("Service controller has completed Service Instance cleanup")
 }
