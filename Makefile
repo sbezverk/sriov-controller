@@ -1,7 +1,7 @@
 REGISTRY_NAME = 192.168.80.240:4000/ligato
 IMAGE_VERSION = latest
 
-.PHONY: all liveness clean test
+.PHONY: all sriov-controller nsm-generate-sriov-configmap mac-controller mac-sriov-configmap container push clean test
 
 ifdef V
 TESTARGS = -v -args -alsologtostderr -v 5
@@ -9,15 +9,23 @@ else
 TESTARGS =
 endif
 
-all: sriov-controller
+all: sriov-controller nsm-generate-sriov-configmap
 
 sriov-controller:
 	mkdir -p bin
-	CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o ./bin/sriov-controller ./sriov-controller.go service-controller.go dpapi-controller.go
+	CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o ./bin/nsm-generate-sriov-configmap ./sriov-controller.go service-controller.go dpapi-controller.go
 
-mac:
+nsm-generate-sriov-configmap:
 	mkdir -p bin
-	CGO_ENABLED=0 GOOS=darwin go build -a -ldflags '-extldflags "-static"' -o ./bin/sriov-controller.mac ./sriov-controller.go
+	CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o ./bin/nsm-generate-sriov-configmap ./nsm-generate-sriov-configmap/nsm-generate-sriov-configmap.go
+
+mac-controller:
+	mkdir -p bin
+	CGO_ENABLED=0 GOOS=darwin go build -a -ldflags '-extldflags "-static"' -o ./bin/sriov-controller.mac ./sriov-controller.go service-controller.go dpapi-controller.go
+
+mac-sriov-configmap:
+	mkdir -p bin
+	CGO_ENABLED=0 GOOS=darwin go build -a -ldflags '-extldflags "-static"' -o ./bin/nsm-generate-sriov-configmap.mac ./nsm-generate-sriov-configmap/nsm-generate-sriov-configmap.go
 
 container: sriov-controller
 	docker build -t $(REGISTRY_NAME)/sriov-controller:$(IMAGE_VERSION) -f ./Dockerfile .
