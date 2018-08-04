@@ -100,3 +100,35 @@ metadata:
   name: nsm-sriov-vf-list
   namespace: default
 ```
+
+Here is example for a deployment requesting 4 SRIOV network services
+
+```yaml
+apiVersion: extensions/v1beta1
+kind: Deployment
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: nsm-sriov
+    spec:
+      containers:
+        - image: 192.168.80.240:4000/ligato/sriov-client-image:latest
+          name: nsm-sriov 
+          command:
+            - /bin/sh
+            - -xec
+            - |
+              while true; do ( echo "Doing nothing"; sleep 30; ) done
+          imagePullPolicy: Always
+          resources:
+            limits:
+              networkservicemesh.io/sriov-ns-1: 1
+              networkservicemesh.io/sriov-ns-2: 1
+              networkservicemesh.io/sriov-ns-3: 1
+              networkservicemesh.io/sriov-ns-4: 1    
+metadata:
+   name: nsm-sriov
+   namespace: default
+```
