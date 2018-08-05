@@ -22,6 +22,11 @@ spec:
               networkservicemesh.io/sriov-ns-2: 1
               networkservicemesh.io/sriov-ns-3: 1
               networkservicemesh.io/sriov-ns-4: 1    
+          securityContext:
+            capabilities:
+              add:
+              - IPC_LOCK
+              - SYS_RESOURCE
 metadata:
    name: nsm-sriov
    namespace: default

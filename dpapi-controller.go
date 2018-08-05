@@ -105,14 +105,6 @@ func (s *serviceInstanceController) processDeleteVF(msg configMessage) {
 	s.Lock()
 	delete(s.vfs, msg.pciAddr)
 	s.Unlock()
-	/*
-		if len(s.vfs) == 0 {
-			// No more VFs left in Network Service Instance
-			// npo reason to have it running, shutting it down
-			s.stopCh <- struct{}{}
-			logrus.Infof("Shutting down Network Service instance: %s, as no more VFs left.", msg.vf.NetworkService)
-		}
-	*/
 	// Sending ListAndWatch notification of an update
 	s.regUpdateCh <- struct{}{}
 }
