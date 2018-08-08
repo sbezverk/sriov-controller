@@ -31,6 +31,8 @@ import (
 	"github.com/sirupsen/logrus"
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 const (
@@ -42,11 +44,13 @@ const (
 	// SRIOV VFs found on a host. Further editing might be required to map VF to real
 	// Network Services
 	nsmSRIOVDefaultNetworkServiceName = "networkservicemesh.io/sriov-nsm-default"
+	nsmSRIOVNodeName                  = "networkservicemesh.io/sriov-node-name"
 )
 
 var (
 	noRebind    = flag.Bool("no-rebind", false, "Prevents rebinding discovered VFs from the current driver to vfio driver.")
 	noConfigMap = flag.Bool("no-configmap", false, "Prevents generating a configmap with discovered VFs information.")
+	kubeconfig  = flag.String("kubeconfig", "", "Absolute path to the kubeconfig file. Either this or master needs to be set if the provisioner is being run out of cluster.")
 )
 
 // VF describes a single instance of VF
@@ -372,6 +376,19 @@ func bindVF(vf *VF) error {
 	})
 }
 
+func buildClient() (*kubernetes.Clientset, error) {
+	k8sClientConfig, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+	if err != nil {
+		return nil, err
+
+	}
+	k8sClientset, err := kubernetes.NewForConfig(k8sClientConfig)
+	if err != nil {
+		return nil, err
+	}
+	return k8sClientset, nil
+}
+
 func main() {
 	flag.Set("logtostderr", "true")
 	flag.Parse()
@@ -395,20 +412,40 @@ func main() {
 	}
 	// Check if noConfigMap is selected
 	if !*noConfigMap {
-		cf, err := buildSRIOVConfigMap(discoveredVFs)
-		if err != nil {
-			logrus.Errorf("failed to build SRIOV config map with error: %+v", err)
+		if err := generateConfigMap(discoveredVFs); err != nil {
+			logrus.Errorf("%+v", err)
 			os.Exit(1)
 		}
-		configMap, err := yaml.Marshal(cf)
-		if err != nil {
-			logrus.Errorf("failed to marshal SRIOV config map with error: %+v", err)
-			os.Exit(1)
-		}
-		if err := ioutil.WriteFile("nsm-sriov-configmap.yaml", configMap, 0644); err != nil {
-			logrus.Errorf("failed to save  SRIOV config map with error: %+v", err)
-			os.Exit(1)
-		}
-		logrus.Info("sriov configmap for Network service mesh has been saved in nsm-sriov-configmap.yaml")
 	}
+}
+
+func generateConfigMap(discoveredVFs *VFs) error {
+	cf, err := buildSRIOVConfigMap(discoveredVFs)
+	if err != nil {
+		return fmt.Errorf("failed to build SRIOV config map with error: %+v", err)
+	}
+	// Adding name of the node where VFs were discovered
+	k8s, err := buildClient()
+	if err != nil {
+		return fmt.Errorf("failed to build kubernetes client with error: %+v", err)
+	}
+	hostName, err := os.Hostname()
+	if err != nil {
+		return fmt.Errorf("failed to get hostname of a node with error: %+v", err)
+	}
+	_, err = k8s.CoreV1().Nodes().Get(hostName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("hostname %s does not appear to be a valid node name in kuebrnetes cluster, error: %+v", hostName, err)
+	}
+	// It was found, adding it as a label to the config map
+	cf.ObjectMeta.Labels[nsmSRIOVNodeName] = hostName
+	configMap, err := yaml.Marshal(cf)
+	if err != nil {
+		return fmt.Errorf("failed to marshal SRIOV config map with error: %+v", err)
+	}
+	if err := ioutil.WriteFile("nsm-sriov-configmap.yaml", configMap, 0644); err != nil {
+		return fmt.Errorf("failed to save  SRIOV config map with error: %+v", err)
+	}
+	logrus.Info("sriov configmap for Network service mesh has been saved in nsm-sriov-configmap.yaml")
+	return nil
 }
