@@ -13,7 +13,7 @@ all: sriov-controller nsm-generate-sriov-configmap
 
 sriov-controller:
 	mkdir -p bin
-	CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o ./bin/nsm-generate-sriov-configmap ./sriov-controller.go service-controller.go dpapi-controller.go
+	CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o ./bin/sriov-controller ./sriov-controller.go service-controller.go dpapi-controller.go
 
 nsm-generate-sriov-configmap:
 	mkdir -p bin

@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -19,7 +20,7 @@ import (
 )
 
 const (
-	nsmLabel = "networkservicemesh.io/sriov=config"
+	nsmSRIOVNodeName = "networkservicemesh.io/sriov-node-name"
 )
 
 type operationType int
@@ -74,6 +75,7 @@ type configController struct {
 	k8sClientset *kubernetes.Clientset
 	informer     cache.SharedIndexInformer
 	vfs          *VFs
+	nodeName     string
 }
 
 func newConfigController() *configController {
@@ -116,11 +118,13 @@ func initConfigController(cc *configController) error {
 	cc.informer = cache.NewSharedIndexInformer(
 		&cache.ListWatch{
 			ListFunc: func(options metav1.ListOptions) (runtime.Object, error) {
-				options.LabelSelector = nsmLabel
+				// Only List configmap for the local node
+				options.LabelSelector = fmt.Sprintf("%s=%s", nsmSRIOVNodeName, cc.nodeName)
 				return cc.k8sClientset.CoreV1().ConfigMaps(metav1.NamespaceAll).List(options)
 			},
 			WatchFunc: func(options metav1.ListOptions) (watch.Interface, error) {
-				options.LabelSelector = nsmLabel
+				// Only Watch configmap for the local node
+				options.LabelSelector = fmt.Sprintf("%s=%s", nsmSRIOVNodeName, cc.nodeName)
 				return cc.k8sClientset.CoreV1().ConfigMaps(metav1.NamespaceAll).Watch(options)
 			},
 		},
@@ -292,7 +296,14 @@ func main() {
 		os.Exit(1)
 	}
 	cc.k8sClientset = k8sClientset
-
+	// Need to figure out host name since controller has to watch the configmap with VFs which belongs
+	// to the local node.
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		logrus.Error("environment variable NODE_NAME must be set via Downward API for the sriov controller, exiting... ")
+		os.Exit(1)
+	}
+	cc.nodeName = nodeName
 	// Instantiating service controller
 	sc := newServiceController()
 	sc.configCh = configCh
