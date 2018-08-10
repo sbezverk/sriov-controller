@@ -107,7 +107,7 @@ func getSriovPfList() ([]string, error) {
 		f, err := os.Lstat(sriovFilePath)
 		if err == nil {
 			if f.Mode().IsRegular() {
-				// CHeck with the list of PFs to exclude from VFs processing, if it is on the list, ignore it.
+				// Check with the list of PFs to exclude from VFs processing, if it is on the list, ignore it.
 				if !strings.Contains(*excludedPF, dev.Name()) {
 					sriovNetDevices = append(sriovNetDevices, dev.Name())
 				}
