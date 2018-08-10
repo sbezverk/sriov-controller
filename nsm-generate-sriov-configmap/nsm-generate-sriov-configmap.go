@@ -51,6 +51,7 @@ var (
 	noRebind    = flag.Bool("no-rebind", false, "Prevents rebinding discovered VFs from the current driver to vfio driver.")
 	noConfigMap = flag.Bool("no-configmap", false, "Prevents generating a configmap with discovered VFs information.")
 	kubeconfig  = flag.String("kubeconfig", "", "Absolute path to the kubeconfig file. Either this or master needs to be set if the provisioner is being run out of cluster.")
+	excludedPF  = flag.String("exclude-pf", "", "Comma separated list of PFs to exclude from VF's processing")
 )
 
 // VF describes a single instance of VF
@@ -105,8 +106,11 @@ func getSriovPfList() ([]string, error) {
 		sriovFilePath := filepath.Join(netDirectory, dev.Name(), "device", "sriov_numvfs")
 		f, err := os.Lstat(sriovFilePath)
 		if err == nil {
-			if f.Mode().IsRegular() { // and its a regular file
-				sriovNetDevices = append(sriovNetDevices, dev.Name())
+			if f.Mode().IsRegular() {
+				// CHeck with the list of PFs to exclude from VFs processing, if it is on the list, ignore it.
+				if !strings.Contains(*excludedPF, dev.Name()) {
+					sriovNetDevices = append(sriovNetDevices, dev.Name())
+				}
 			}
 		}
 	}
