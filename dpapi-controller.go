@@ -234,9 +234,17 @@ func (s *serviceInstanceController) ListAndWatch(e *pluginapi.Empty, d pluginapi
 func (s *serviceInstanceController) Allocate(ctx context.Context, reqs *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
 	logrus.Infof("network service %s received Allocate from kubelet", s.networkServiceName)
 	responses := pluginapi.AllocateResponse{}
+	// Bulding the key for Env variable map
+	key := "NSM_VFS_" + strings.Split(s.networkServiceName, "/")[1]
+	key = strings.Replace(key, "-", "_", -1)
 	for _, req := range reqs.ContainerRequests {
 		response := pluginapi.ContainerAllocateResponse{
 			Devices: []*pluginapi.DeviceSpec{},
+			// Adding env variable for requested network service, the key is composed as "NSM_VFS_"+ {network service name}
+			// excluding organization prefix.
+			Envs: map[string]string{
+				key: strings.Join(req.DevicesIDs, ","),
+			},
 		}
 		for _, id := range req.DevicesIDs {
 			deviceSpec := pluginapi.DeviceSpec{}
@@ -256,7 +264,7 @@ func (s *serviceInstanceController) Allocate(ctx context.Context, reqs *pluginap
 		deviceSpec.ContainerPath = "/dev/vfio/vfio"
 		deviceSpec.Permissions = "rw"
 		response.Devices = append(response.Devices, &deviceSpec)
-		//
+
 		responses.ContainerResponses = append(responses.ContainerResponses, &response)
 	}
 
