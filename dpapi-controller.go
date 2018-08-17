@@ -235,8 +235,15 @@ func (s *serviceInstanceController) Allocate(ctx context.Context, reqs *pluginap
 	logrus.Infof("network service %s received Allocate from kubelet", s.networkServiceName)
 	responses := pluginapi.AllocateResponse{}
 	// Bulding the key for Env variable map
-	key := "NSM_VFS_" + strings.Split(s.networkServiceName, "/")[1]
+	key := strings.ToLower(strings.Split(s.networkServiceName, "/")[1])
 	key = strings.Replace(key, "-", "_", -1)
+	if strings.HasPrefix(key, "sriov_") {
+		key = "NSM_VFS_" + strings.Split(key, "sriov_")[1]
+	} else {
+		// Should not happened and it should fail
+		// TODO (sbezverk) Re-evaluate: To fail or not to fail
+		key = "NSM_VFS_" + key
+	}
 	for _, req := range reqs.ContainerRequests {
 		response := pluginapi.ContainerAllocateResponse{
 			Devices: []*pluginapi.DeviceSpec{},
