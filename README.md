@@ -17,10 +17,17 @@ nsm-generate-sriov-configmap does the following:
 
 Available options:
 
+<<<<<<< HEAD
 - --no-rebind {true|false} Default: false, prevents rebinding discovered VFs from the current driver to vfio driver.
 - --no-configmap {true|false} Default: false, prevents generating a configmap with discovered VFs information.
 - --kubeconfig  Absolute path to the kubeconfig file. It is required for generating configmap.
 - --exclude-pf  Comma separated list of PFs to exclude from VF's processing
+=======
+--no-rebind {true|false} Default: false, prevents rebinding discovered VFs from the current driver to vfio driver.
+--no-configmap {true|false} Default: false, prevents generating a configmap with discovered VFs information.
+--kubeconfig  Absolute path to the kubeconfig file. It is required for generating configmap.
+--exclude-pf  Comma separated list of PFs to exclude from VF's processing
+>>>>>>> 99714ac37626d0eb15265627b4049ee023ba5f10
 
 By default ALL VFs belong to default network service nsm-default. If VFs provide different Network Services, then for such VFs NetworkService: tag must be edited to reflect its Network Service.
 
