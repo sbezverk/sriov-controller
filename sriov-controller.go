@@ -21,6 +21,11 @@ import (
 
 const (
 	nsmSRIOVNodeName = "networkservicemesh.io/sriov-node-name"
+	// containersConfigPath specifies location where sriov controller stores per POD network service
+	// configuration file.
+	// TODO (sbezverk) 1. how to clean up after POD which is using this file is gone? The controller could cleanup
+	// this folder during a boot up, but how to detect which one is used and whcih one not?
+	containersConfigPath = "/var/lib/networkservicemesh/sriov-controller/temp"
 )
 
 type operationType int
@@ -45,6 +50,7 @@ type message struct {
 // VF describes a single instance of VF
 type VF struct {
 	NetworkService string `yaml:"networkService" json:"networkService"`
+	PCIAddr        string `yaml:"pciAddr" json:"pciAddr"`
 	ParentDevice   string `yaml:"parentDevice" json:"parentDevice"`
 	VFLocalID      int32  `yaml:"vfLocalID" json:"vfLocalID"`
 	VFIODevice     string `yaml:"vfioDevice" json:"vfioDevice"`
@@ -285,6 +291,15 @@ func main() {
 	flag.Set("logtostderr", "true")
 	flag.Parse()
 
+	// creating directory to store pods' network services configuration files
+	if _, err := os.Stat(containersConfigPath); err != nil {
+		if os.IsNotExist(err) {
+			os.MkdirAll(containersConfigPath, 0644)
+		} else {
+			logrus.Error("failure to access folder %s with error: %+v", containersConfigPath, err)
+			os.Exit(1)
+		}
+	}
 	// Instantiating config controller
 	cc := newConfigController()
 	cc.stopCh = make(chan struct{})

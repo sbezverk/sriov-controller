@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"os"
 	"path"
@@ -18,6 +20,7 @@ import (
 const (
 	serverBasePath          = pluginapi.DevicePluginPath
 	updateChannelBufferSize = 10
+	containerConfigFilePath = "/var/lib/networkservicemesh"
 )
 
 type registrationState int
@@ -230,27 +233,66 @@ func (s *serviceInstanceController) ListAndWatch(e *pluginapi.Empty, d pluginapi
 	}
 }
 
+// vfioConfig is stuct used to store vfio device specific information
+type vfioConfig struct {
+	VFIODevice string `yaml:"vfioDevice" json:"vfioDevice"`
+	PCIAddr    string `yaml:"pciAddr" json:"pciAddr"`
+}
+
+// vfioPCIAddr looks for vfio device's PCI address and return vfioConfig instance
+func (s *serviceInstanceController) vfioPCIAddr(vfioDev string) (vfioConfig, error) {
+	for _, vfio := range s.serviceInstance.vfs {
+		if vfio.VFIODevice == vfioDev {
+			return vfioConfig{
+				VFIODevice: vfioDev,
+				PCIAddr:    vfio.PCIAddr,
+			}, nil
+		}
+	}
+	return vfioConfig{}, fmt.Errorf("vfio %s device is not found", vfioDev)
+}
+
 // Allocate which return list of devices.
 func (s *serviceInstanceController) Allocate(ctx context.Context, reqs *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
 	logrus.Infof("network service %s received Allocate from kubelet", s.networkServiceName)
+	// Allocating Device Plugin API response struct
 	responses := pluginapi.AllocateResponse{}
-	// Bulding the key for Env variable map
+	// Allocating slice of vfioConfigs, the content of this slice will be saved as a json file and make available to POD requesting
+	// the network service.
+	vfioDevs := []vfioConfig{}
+	// Bulding per network service key for Env variable, it will point to the network service configuration
+	// file.
 	key := strings.ToLower(strings.Split(s.networkServiceName, "/")[1])
 	key = strings.Replace(key, "-", "_", -1)
 	if strings.HasPrefix(key, "sriov_") {
 		key = "NSM_VFS_" + strings.Split(key, "sriov_")[1]
 	} else {
-		// Should not happened and it should fail
+		// Should not happened and it should fail (maybe) if it has
 		// TODO (sbezverk) Re-evaluate: To fail or not to fail
 		key = "NSM_VFS_" + key
 	}
+	configFile, err := ioutil.TempFile(containersConfigPath, "sriov-")
+	if err != nil {
+		return nil, fmt.Errorf("fail to create network services config file with error: %+v", err)
+	}
+	_, configFileName := path.Split(configFile.Name())
+	defer configFile.Close()
 	for _, req := range reqs.ContainerRequests {
 		response := pluginapi.ContainerAllocateResponse{
 			Devices: []*pluginapi.DeviceSpec{},
 			// Adding env variable for requested network service, the key is composed as "NSM_VFS_"+ {network service name}
 			// excluding organization prefix.
+			// Environment variable points to the location of the network service specific configuration file
 			Envs: map[string]string{
-				key: strings.Join(req.DevicesIDs, ","),
+				key: path.Join(containerConfigFilePath, configFileName),
+			},
+			Mounts: []*pluginapi.Mount{
+				&pluginapi.Mount{
+					// Adding this specific network service configuration file into the container
+					ContainerPath: path.Join(containerConfigFilePath, configFileName),
+					HostPath:      configFile.Name(),
+					ReadOnly:      true,
+				},
 			},
 		}
 		for _, id := range req.DevicesIDs {
@@ -263,6 +305,11 @@ func (s *serviceInstanceController) Allocate(ctx context.Context, reqs *pluginap
 			deviceSpec.ContainerPath = id
 			deviceSpec.Permissions = "rw"
 			response.Devices = append(response.Devices, &deviceSpec)
+			vfioDev, err := s.vfioPCIAddr(id)
+			if err != nil {
+				return nil, fmt.Errorf("invalid allocation request: unable to get device %s pci address with error: %+v", id, err)
+			}
+			vfioDevs = append(vfioDevs, vfioDev)
 		}
 		// Since the parent vfio device is also required to be visible in a container, adding it to the device list
 		// so kubelet could do necessary arrangements.
@@ -274,7 +321,14 @@ func (s *serviceInstanceController) Allocate(ctx context.Context, reqs *pluginap
 
 		responses.ContainerResponses = append(responses.ContainerResponses, &response)
 	}
-
+	// Last step is to create network service configuration file.
+	configBytes, err := json.Marshal(&vfioDevs)
+	if err != nil {
+		return nil, fmt.Errorf("allocation request failure, unable to marshal config file with error: %+v", err)
+	}
+	if _, err := configFile.Write(configBytes); err != nil {
+		return nil, fmt.Errorf("allocation request failure, unable to save config file with error: %+v", err)
+	}
 	return &responses, nil
 }
 

@@ -58,8 +58,8 @@ var (
 type VF struct {
 	// NetworkService defines a network service which is offered by this VF
 	NetworkService string `yaml:"networkService" json:"networkService"`
-	// pciAddr in a form of string with ':' replaced by '-', used as a key in VFs map
-	pciAddr string // `yaml:"pciAddr" json:"pciAddr"`
+	// PCIAddr in a form of string with ':' replaced by '-', used as a key in VFs map
+	PCIAddr string `yaml:"pciAddr" json:"pciAddr"`
 	// PF which this VF belogs to
 	ParentDevice string `yaml:"parentDevice" json:"parentDevice"`
 	// VF's ID in relation to PF
@@ -227,7 +227,7 @@ func discoverNetworks(discoveredVFs *VFs) error {
 				iommuGroup = strings.Split(iommuGroup, "/")[len(strings.Split(iommuGroup, "/"))-1]
 				pciAddr = strings.Replace(pciAddr, ":", "-", -1)
 				discoveredVFs.vfs[pciAddr] = &VF{}
-				discoveredVFs.vfs[pciAddr].pciAddr = pciAddr
+				discoveredVFs.vfs[pciAddr].PCIAddr = pciAddr
 				discoveredVFs.vfs[pciAddr].iommuGroup = iommuGroup
 				discoveredVFs.vfs[pciAddr].ParentDevice = dev
 				discoveredVFs.vfs[pciAddr].pciType = pciType
@@ -257,11 +257,14 @@ func buildSRIOVConfigMap(discoveredVFs *VFs) (v1.ConfigMap, error) {
 	}
 	dataString := make(map[string]string, 0)
 	for _, vf := range discoveredVFs.vfs {
+		// PCIAddress containes ":" character which is not acceptable in map[string]string in a key
+		key := vf.PCIAddr
+		vf.PCIAddr = strings.Replace(vf.PCIAddr, "-", ":", -1)
 		data, err := yaml.Marshal(vf)
 		if err != nil {
 			return v1.ConfigMap{}, err
 		}
-		dataString[vf.pciAddr] = string(data)
+		dataString[key] = string(data)
 	}
 	configMap.Data = dataString
 
@@ -299,9 +302,9 @@ func buildVFIODevices(discoveredVFs *VFs) error {
 		iommuGroup, err := strconv.Atoi(vf.iommuGroup)
 		if err != nil {
 			// Something wrong with iommu group for this VF
-			delete(discoveredVFs.vfs, vf.pciAddr)
+			delete(discoveredVFs.vfs, vf.PCIAddr)
 			logrus.Errorf("fail to convert iommu group with error: %+v for pci address: %s",
-				err, strings.Replace(vf.pciAddr, "-", ":", -1))
+				err, strings.Replace(vf.PCIAddr, "-", ":", -1))
 			continue
 		}
 		vfioDevice := fmt.Sprintf("/dev/vfio/%d", iommuGroup)
@@ -310,18 +313,18 @@ func buildVFIODevices(discoveredVFs *VFs) error {
 			// Something wrong with access vfio path for iommu group
 			// it is safer to skip it and remove from the list of available VFs
 			// on the host.
-			delete(discoveredVFs.vfs, vf.pciAddr)
+			delete(discoveredVFs.vfs, vf.PCIAddr)
 			logrus.Errorf("fail to check for existing vfio device with error: %+v for pci address: %s",
-				err, strings.Replace(vf.pciAddr, "-", ":", -1))
+				err, strings.Replace(vf.PCIAddr, "-", ":", -1))
 			continue
 		}
 		// vfio device for iommu group does not exist, need to create it
-		discoveredVFs.vfs[vf.pciAddr].VFIODevice = vfioDevice
+		discoveredVFs.vfs[vf.PCIAddr].VFIODevice = vfioDevice
 		if err := bindVF(vf); err != nil {
 			// Could not bind, cannot use, delete this VF
 			logrus.Errorf("fail to bind VF to vfio device with error: %+v for pci address: %s",
-				err, strings.Replace(vf.pciAddr, "-", ":", -1))
-			delete(discoveredVFs.vfs, vf.pciAddr)
+				err, strings.Replace(vf.PCIAddr, "-", ":", -1))
+			delete(discoveredVFs.vfs, vf.PCIAddr)
 			continue
 		}
 	}
@@ -345,7 +348,7 @@ func waitAndRetry(timeout time.Duration, retries int, check func() bool) error {
 
 // bindVF unbinds VF's from whatever driver currently owns it and rebinds to vfio device
 func bindVF(vf *VF) error {
-	pciAddr := strings.Replace(vf.pciAddr, "-", ":", -1)
+	pciAddr := strings.Replace(vf.PCIAddr, "-", ":", -1)
 	unbindPath := fmt.Sprintf("/sys/bus/pci/devices/%s/driver/unbind", pciAddr)
 	cmdUnbind := exec.Command("echo", pciAddr)
 	u, err := os.OpenFile(unbindPath, os.O_WRONLY, 0200)
