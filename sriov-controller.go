@@ -25,7 +25,7 @@ const (
 	// configuration file.
 	// TODO (sbezverk) 1. how to clean up after POD which is using this file is gone? The controller could cleanup
 	// this folder during a boot up, but how to detect which one is used and whcih one not?
-	containersConfigPath = "/var/lib/networkservicemesh/sriov-controller/temp"
+	containersConfigPath = "/var/lib/networkservicemesh/sriov-controller/config"
 )
 
 type operationType int

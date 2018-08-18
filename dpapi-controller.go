@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"path"
@@ -239,8 +238,9 @@ type vfioConfig struct {
 	PCIAddr    string `yaml:"pciAddr" json:"pciAddr"`
 }
 
-// vfioPCIAddr looks for vfio device's PCI address and return vfioConfig instance
-func (s *serviceInstanceController) vfioPCIAddr(vfioDev string) (vfioConfig, error) {
+// getVFIODevSpecs looks for vfio device's specs, example PCI address and return vfioConfig instance.
+// In future other parameters could be added, example NUMATopology, CPUPinning, etc.
+func (s *serviceInstanceController) getVFIODevSpecs(vfioDev string) (vfioConfig, error) {
 	for _, vfio := range s.serviceInstance.vfs {
 		if vfio.VFIODevice == vfioDev {
 			return vfioConfig{
@@ -262,20 +262,23 @@ func (s *serviceInstanceController) Allocate(ctx context.Context, reqs *pluginap
 	vfioDevs := []vfioConfig{}
 	// Bulding per network service key for Env variable, it will point to the network service configuration
 	// file.
-	key := strings.ToLower(strings.Split(s.networkServiceName, "/")[1])
-	key = strings.Replace(key, "-", "_", -1)
-	if strings.HasPrefix(key, "sriov_") {
-		key = "NSM_VFS_" + strings.Split(key, "sriov_")[1]
-	} else {
-		// Should not happened and it should fail (maybe) if it has
-		// TODO (sbezverk) Re-evaluate: To fail or not to fail
-		key = "NSM_VFS_" + key
+	networkServiceName := strings.ToLower(strings.Split(s.networkServiceName, "/")[1])
+	networkServiceName = strings.Replace(networkServiceName, "-", "_", -1)
+	if strings.HasPrefix(networkServiceName, "sriov_") {
+		networkServiceName = strings.Split(networkServiceName, "sriov_")[1]
 	}
-	configFile, err := ioutil.TempFile(containersConfigPath, "sriov-")
+	key := "NSM_VFS_" + networkServiceName
+	// Creating config file which will be passed to the POD. The config file name is composed
+	// from Network Service name + vfio group ID taken from the first device in Allocate Request.
+	// Example: If Network Service is vlan10 and AllocateRequest has /dev/vfio/67, then the config
+	// file name will be vlan10_67.json.
+	// If a file with the same name already exists, os.Create will truncate it and previous content will be lost.
+	_, groupID := path.Split(reqs.ContainerRequests[0].DevicesIDs[0])
+	configFileName := fmt.Sprintf("%s_%s.json", networkServiceName, groupID)
+	configFile, err := os.Create(path.Join(containersConfigPath, configFileName))
 	if err != nil {
 		return nil, fmt.Errorf("fail to create network services config file with error: %+v", err)
 	}
-	_, configFileName := path.Split(configFile.Name())
 	defer configFile.Close()
 	for _, req := range reqs.ContainerRequests {
 		response := pluginapi.ContainerAllocateResponse{
@@ -299,15 +302,17 @@ func (s *serviceInstanceController) Allocate(ctx context.Context, reqs *pluginap
 			deviceSpec := pluginapi.DeviceSpec{}
 			logrus.Infof("Allocation request for device: %s", id)
 			if !s.checkVF(id) {
-				return nil, fmt.Errorf("invalid allocation request: unknown device: %s", id)
+				return nil, fmt.Errorf("allocation request failure, unknown device: %s", id)
 			}
 			deviceSpec.HostPath = id
 			deviceSpec.ContainerPath = id
 			deviceSpec.Permissions = "rw"
 			response.Devices = append(response.Devices, &deviceSpec)
-			vfioDev, err := s.vfioPCIAddr(id)
+			// Getting vfio device specific specifications and storing it in the slice. The slice
+			// will be marshalled into json and passed to requesting POD as a mount.
+			vfioDev, err := s.getVFIODevSpecs(id)
 			if err != nil {
-				return nil, fmt.Errorf("invalid allocation request: unable to get device %s pci address with error: %+v", id, err)
+				return nil, fmt.Errorf("allocation request failure, unable to get device %s specs with error: %+v", id, err)
 			}
 			vfioDevs = append(vfioDevs, vfioDev)
 		}
@@ -321,7 +326,7 @@ func (s *serviceInstanceController) Allocate(ctx context.Context, reqs *pluginap
 
 		responses.ContainerResponses = append(responses.ContainerResponses, &response)
 	}
-	// Last step is to create network service configuration file.
+	// Last step is to store vfio devices specification in the  network service configuration file.
 	configBytes, err := json.Marshal(&vfioDevs)
 	if err != nil {
 		return nil, fmt.Errorf("allocation request failure, unable to marshal config file with error: %+v", err)
