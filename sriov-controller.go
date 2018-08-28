@@ -296,7 +296,7 @@ func main() {
 		if os.IsNotExist(err) {
 			os.MkdirAll(containersConfigPath, 0644)
 		} else {
-			logrus.Error("failure to access folder %s with error: %+v", containersConfigPath, err)
+			logrus.Errorf("failure to access folder %s with error: %+v", containersConfigPath, err)
 			os.Exit(1)
 		}
 	}
