@@ -219,7 +219,7 @@ func processConfigMapAdd(cc *configController, configMap *v1.ConfigMap) error {
 	cc.vfs.Lock()
 	cc.vfs.vfs = vfs
 	cc.vfs.Unlock()
-	logrus.Infof("Imported: %d VF configuration(s). Sending configuration to serviceController.", cc.vfs)
+	logrus.Infof("Imported: %d VF configuration(s). Sending configuration to serviceController.", len(cc.vfs.vfs))
 	for k, vf := range cc.vfs.vfs {
 		cc.configCh <- configMessage{op: operationAdd, pciAddr: k, vf: *vf}
 	}
