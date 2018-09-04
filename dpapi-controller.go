@@ -20,6 +20,7 @@ const (
 	serverBasePath          = pluginapi.DevicePluginPath
 	updateChannelBufferSize = 10
 	containerConfigFilePath = "/var/lib/networkservicemesh"
+	nsmVFsPrefix            = "NSM_VFS_"
 )
 
 type registrationState int
@@ -45,16 +46,21 @@ type serviceInstanceController struct {
 	server    *grpc.Server
 }
 
-func newServiceInstanceController() *serviceInstanceController {
+func newServiceInstanceController(configCh chan configMessage, stopCh, doneCh chan struct{}) *serviceInstanceController {
 	si := serviceInstance{
-		vfs: map[string]*VF{},
+		vfs:      map[string]*VF{},
+		configCh: configCh,
 	}
-	return &serviceInstanceController{si, notRegistered, sync.RWMutex{}, "", "",
-		make(chan struct{},
-			updateChannelBufferSize),
-		make(chan struct{}),
-		make(chan struct{}),
-		nil}
+	sic := &serviceInstanceController{
+		serviceInstance: si,
+		regState:        notRegistered,
+		regUpdateCh:     make(chan struct{}, updateChannelBufferSize),
+		regStopCh:       stopCh,
+		regDoneCh:       doneCh,
+	}
+	sic.RWMutex = sync.RWMutex{}
+
+	return sic
 }
 
 // Run starts Network Service instance and wait for configuration messages
@@ -89,8 +95,10 @@ func (s *serviceInstanceController) Run() {
 func (s *serviceInstanceController) processAddVF(msg configMessage) {
 	logrus.Infof("Network Service instance: %s, adding new VF, PCI address: %s", msg.vf.NetworkService, msg.pciAddr)
 	if s.regState == notRegistered {
+		s.Lock()
 		logrus.Infof("service instance controller for %s has not yet been registered with kubelet, initiating registration process", msg.vf.NetworkService)
 		s.regState = registrationInProgress
+		s.Unlock()
 		go s.startDevicePlugin(msg)
 	}
 	s.Lock()
@@ -105,8 +113,8 @@ func (s *serviceInstanceController) processAddVF(msg configMessage) {
 func (s *serviceInstanceController) processDeleteVF(msg configMessage) {
 	logrus.Infof("Network Service instance: %s, delete VF, PCI address: %s", msg.vf.NetworkService, msg.pciAddr)
 	s.Lock()
+	defer s.Unlock()
 	delete(s.vfs, msg.pciAddr)
-	s.Unlock()
 	// Sending ListAndWatch notification of an update
 	s.regUpdateCh <- struct{}{}
 }
@@ -221,7 +229,8 @@ func (s *serviceInstanceController) ListAndWatch(e *pluginapi.Empty, d pluginapi
 		case <-s.regStopCh:
 			logrus.Infof("ListAndWatch of Network Service %s received shut down signal.", s.networkServiceName)
 			// Informing kubelet that VFs which belong to network service are not useable now
-			d.Send(&pluginapi.ListAndWatchResponse{Devices: s.buildDeviceList(pluginapi.Unhealthy)})
+			d.Send(&pluginapi.ListAndWatchResponse{
+				Devices: []*pluginapi.Device{}})
 			close(s.regDoneCh)
 			return nil
 		case <-s.regUpdateCh:
@@ -267,7 +276,7 @@ func (s *serviceInstanceController) Allocate(ctx context.Context, reqs *pluginap
 	if strings.HasPrefix(networkServiceName, "sriov_") {
 		networkServiceName = strings.Split(networkServiceName, "sriov_")[1]
 	}
-	key := "NSM_VFS_" + networkServiceName
+	key := nsmVFsPrefix + networkServiceName
 	// Creating config file which will be passed to the POD. The config file name is composed
 	// from Network Service name + vfio group ID taken from the first device in Allocate Request.
 	// Example: If Network Service is vlan10 and AllocateRequest has /dev/vfio/67, then the config
